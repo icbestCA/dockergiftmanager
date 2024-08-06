@@ -1,16 +1,19 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, session, flash, render_template_string
 from functools import wraps
 from mailjet_rest import Client
 from datetime import datetime
 import json, subprocess, hashlib
+import os
+from dotenv import load_dotenv, set_key, dotenv_values
+load_dotenv()
 
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'test'
+app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
 app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'  # Set SameSite attribute to Strict
 
-mailjet_api_key = "YOUR_API_KEY"
-mailjet_api_secret = "YOUR_API_KEY"
+mailjet_api_key = os.getenv("MAILJET_API_KEY")
+mailjet_api_secret = os.getenv("MAILJET_API_SECRET")
 mailjet = Client(auth=(mailjet_api_key, mailjet_api_secret), version='v3.1')
 
 
@@ -83,6 +86,20 @@ def run_script():
         error_message = f"Error occurred while running {script_name}: {e}\n\n"
         error_message += e.stderr  # Append the error details from stderr
         return render_template('script_output.html', script_output=error_message)
+    
+@app.route('/runemail')
+def run_email():
+    script_name = 'mailjet.py'
+    try:
+        result = subprocess.run(['python', script_name], capture_output=True, text=True, check=True)
+        script_output = result.stdout
+        return render_template('script_output.html', script_output=script_output)
+    except subprocess.CalledProcessError as e:
+        error_message = f"Error occurred while running {script_name}: {e}\n\n"
+        error_message += e.stderr  # Append the error details from stderr
+        return render_template('script_output.html', script_output=error_message)
+
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -105,6 +122,7 @@ def login():
     return render_template('login.html')
 
 
+
 @app.route('/feedback', methods=['GET', 'POST'])
 def feedback():
     if request.method == 'POST':
@@ -117,13 +135,13 @@ def feedback():
             'Messages': [
                 {
                     'From': {
-                        'Email': 'ADRESS EMAIL OF SENDER', # Your email as the sender
+                        'Email': os.getenv("SYSTEM_EMAIL"),
                         'Name': 'Cadeaux Feedback',
                     },
                     'To': [
                         {
-                            'Email': 'ADRESS EMAIL OF SENDER',  # Your email as the recipient
-                            'Name': 'YOUR NAME',
+                            'Email': os.getenv("FEED_SEND"),  # Your email as the recipient
+                            'Name': 'Isaac',
                         },
                     ],
                     'Subject': 'Feedback',
@@ -145,9 +163,9 @@ def feedback():
 
 
 
-@app.route('/add2/<selected_user_id>', methods=['GET', 'POST'])
+@app.route('/add2/', methods=['GET', 'POST'])
 @login_required
-def add2(selected_user_id):
+def add2():
 
     if request.method == 'POST':
         # Handle the form submission, process the data, and add the idea
@@ -155,8 +173,11 @@ def add2(selected_user_id):
         name = request.form['name']
         description = request.form.get('description', '')
         link = request.form.get('link', '')
-        added_by = session['username']  # Get the username of the user who added the idea
 
+        # You can customize how you retrieve the currently logged-in user here
+        # For example, if you're storing the username in the session:
+        added_by = session.get('username')
+        
         # Find the largest gift idea ID
         largest_gift_idea_id = max(idea['gift_idea_id'] for idea in gift_ideas_data)
 
@@ -190,7 +211,7 @@ def add2(selected_user_id):
     user_list = [{"full_name": user["full_name"], "username": user["username"]} for user in users]
 
     # Render the "Add Idea" page with the user list and the selected user as default
-    return render_template('add2.html', user_list=user_list, selected_user_id=selected_user_id)
+    return render_template('add2.html', user_list=user_list)
 
 
 
@@ -206,11 +227,13 @@ def add_idea(selected_user_id):
         name = request.form['name']
         description = request.form.get('description', '')
         link = request.form.get('link', '')
-        added_by = session.get('username')  # Get the username of the user who added the idea
+        
+        # You can customize how you retrieve the currently logged-in user here
+        # For example, if you're storing the username in the session:
+        added_by = session.get('username')
 
         # Find the largest gift idea ID
         largest_gift_idea_id = max(idea['gift_idea_id'] for idea in gift_ideas_data)
-
 
         # Create a new idea object
         new_idea = {
@@ -233,14 +256,10 @@ def add_idea(selected_user_id):
 
         return redirect(url_for('user_gift_ideas', selected_user_id=user))
 
-    # Read user data from the JSON file
-    with open('users.json', 'r') as file:
-        users = json.load(file)
-
-    # Extract the user list from the JSON data
+    # Extract the user list for the dropdown from the users data
     user_list = [{"full_name": user["full_name"], "username": user["username"]} for user in users]
 
-    # Render the "Add Idea" page with the user list and the selected user as default
+    # Render the "Add Idea" page with the user list, gift ideas, and the selected user as default
     return render_template('add_idea.html', user_list=user_list, gift_ideas=gift_ideas_data, default_user=selected_user_id)
 
 
@@ -286,8 +305,8 @@ def send_email_to_buyer_via_mailjet(buyer_username, idea_name, message_subject):
                     'Messages': [
                         {
                             'From': {
-                                'Email': 'ADRESS EMAIL OF SENDER',  # Your sender email address
-                                'Name': 'YOUR NAME',
+                                'Email': os.getenv("SYSTEM_EMAIL"),  # Your sender email address
+                                'Name': 'Liste Cadeau',
                             },
                             'To': [
                                 {
@@ -383,12 +402,12 @@ def change_password():
 
     # Check if the current password matches the stored password
     if currenthash != user_password:
-        flash('Actual password incorrect', 'danger')
+        flash('Mot de passe actuel incorrect', 'danger')
         return redirect(url_for('dashboard'))
 
     # Check if the new password and confirmation match
     if newhash != confhash:
-        flash('The new password and confirmation do not match', 'danger')
+        flash('Nouveau mot de passe et confirmation ne correspondent pas', 'danger')
         return redirect(url_for('dashboard'))
 
     # Update the user's password in the JSON data (you may need to modify this)
@@ -401,7 +420,7 @@ def change_password():
     with open('users.json', 'w') as file:
         json.dump(users, file, indent=4)
 
-    flash('Password successfully modified', 'success')
+    flash('Mot de passe modifié avec succès.', 'success')
     return redirect(url_for('dashboard'))
 
 def find_idea_by_id(ideas, idea_id):
@@ -479,9 +498,11 @@ def get_user_full_name(selected_user_id):
             return user.get('full_name')
     return None 
 
+
 @app.route('/user_gift_ideas/<selected_user_id>')
 @login_required
 def user_gift_ideas(selected_user_id):
+
     # Check if the selected user is the same as the connected user
     connected_user = session.get('username')
     if selected_user_id == connected_user:
@@ -495,8 +516,10 @@ def user_gift_ideas(selected_user_id):
     if not user_gift_ideas:
         flash('No gift ideas for this user.', 'info')
         return redirect(url_for('noidea'))
+    
+    user_namels = get_user_full_name(selected_user_id)
 
-    return render_template('user_gift_ideas.html', user_gift_ideas=user_gift_ideas)
+    return render_template('user_gift_ideas.html', user_gift_ideas=user_gift_ideas, user_namels=user_namels)
 
 @app.route('/my_ideas')
 @login_required
@@ -585,6 +608,125 @@ def edit_idea(idea_id):
         flash('Idea not found', 'danger')
 
     return redirect(url_for('dashboard'))
+
+
+def check_password(username, password):
+    with open('users.json', 'r') as file:
+        users = json.load(file)
+        for user in users:
+            if user['username'] == username:
+                hashed_password = hashlib.sha1(password.encode()).hexdigest()
+                return hashed_password == user['password']
+    return False
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session:
+            flash('Please log in first.', 'warning')
+            return redirect(url_for('login'))
+        user = next((u for u in users if u['username'] == session['username']), None)
+        if not user or not user.get('admin'):
+            flash('Admin access required.', 'danger')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+
+@app.route('/delete_default_profiles', methods=['GET', 'POST'])
+@login_required
+def delete_default_profiles():
+    flag_file = 'default_profiles_deleted.flag'
+    
+    # Check if the flag file exists
+    if os.path.exists(flag_file):
+        flash('Default profiles have already been deleted.', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    # Load user data from the JSON file
+    with open('users.json', 'r') as file:
+        users = json.load(file)
+    
+    if request.method == 'POST':
+        password = request.form['password']
+        current_user = session['username']
+
+        # Ensure the current user is not one of the default profiles
+        if current_user in ['user2', 'demo']:
+            flash('You cannot delete default profiles while logged in as a default profile.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        # Check if there are more than two profiles
+        if len(users) <= 2:
+            flash('Cannot delete default profiles. Less than or equal to two profiles exist.', 'danger')
+            return redirect(url_for('dashboard'))
+
+        # Verify the password
+        if not check_password(current_user, password):
+            flash('Incorrect password. Please try again.', 'danger')
+            return redirect(url_for('delete_default_profiles'))
+
+        # Delete the default profiles
+        users = [user for user in users if user['username'] not in ['user2', 'demo']]
+
+        # Grant admin status to the current user
+        for user in users:
+            if user['username'] == current_user:
+                user['admin'] = True
+                break
+
+        # Update the JSON file
+        with open('users.json', 'w') as file:
+            json.dump(users, file, indent=4)
+
+        # Create the flag file to indicate that the default profiles have been deleted
+        with open(flag_file, 'w') as file:
+            file.write('default profiles deleted')
+
+        flash('Default profiles deleted successfully. You have been granted admin status.', 'success')
+        return redirect(url_for('dashboard'))
+
+    return render_template('delete_default_profiles.html')
+
+
+field_explanations = {
+    "FEED_SEND": "adress email you wish to receve the feedback from the form  ",
+    "MAILJET_API_KEY": "Mailjet API key",
+    "MAILJET_API_SECRET": "Mailjet API secret key",
+    "SECRET_KEY": "Flask secret key for browser data",
+    "SYSTEM_EMAIL": "System email that will send the mesaage related to the app, must be allowed in mailjet",
+}
+# Function to get current .env values
+def get_env_values():
+    return dotenv_values()
+
+@app.route('/env')
+@login_required
+@admin_required
+def env():
+    env_values = get_env_values()
+    return render_template_string('''
+        <h1>Configure .env File</h1>
+        <form method="POST" action="{{ url_for('update_env') }}">
+            {% for key, value in env_values.items() %}
+                <div>
+                    <label>{{ key }}: {{ explanations[key] }}</label>
+                    <input type="text" name="{{ key }}" value="{{ value }}">
+                </div>
+            {% endfor %}
+            <button type="submit">Update</button>
+        </form>
+    ''', env_values=env_values, explanations=field_explanations)
+
+@app.route('/update', methods=['POST'])
+def update_env():
+    for key in field_explanations.keys():
+        if key in request.form:
+            new_value = request.form[key]
+            set_key('.env', key, new_value)
+    return redirect(url_for('env'))
 
 if __name__ == '__main__':
     app.run(debug=True)
