@@ -8,6 +8,8 @@ import json, subprocess, hashlib
 import os
 import random
 from dotenv import load_dotenv, set_key, dotenv_values
+from apscheduler.schedulers.background import BackgroundScheduler
+import shutil
 load_dotenv()
 
 
@@ -44,6 +46,37 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
+
+# Define the paths to the files you want to back up
+IDEAS_JSON_PATH = '/app/ideas.json'
+USERS_JSON_PATH = '/app/users.json'
+
+# Define the backup directory on the host (this will be mounted to the container)
+BACKUP_DIR = '/backup'  # This path should match the mounted directory
+
+
+def backup_files():
+    try:
+        # Generate timestamp for the backup files
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Define the backup file paths
+        ideas_backup_path = os.path.join(BACKUP_DIR, f'ideas_{timestamp}.json')
+        users_backup_path = os.path.join(BACKUP_DIR, f'users_{timestamp}.json')
+
+        # Copy the files to the backup directory
+        shutil.copy2(IDEAS_JSON_PATH, ideas_backup_path)
+        shutil.copy2(USERS_JSON_PATH, users_backup_path)
+        
+        app.logger.info(f"Backup completed at {datetime.now()} - ideas.json and users.json copied successfully")
+    
+    except Exception as e:
+        app.logger.error(f"Backup failed: {str(e)}")
+
+# Set up the scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(backup_files, 'interval', hours=1)  # Schedule the job to run every hour
+scheduler.start()
 
 @app.route('/change_email', methods=['POST'])
 @login_required
