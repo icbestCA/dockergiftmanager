@@ -10,8 +10,9 @@ import random
 from dotenv import load_dotenv, set_key, dotenv_values
 from apscheduler.schedulers.background import BackgroundScheduler
 import shutil
-load_dotenv()
+import urllib.request
 
+load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
@@ -24,17 +25,93 @@ mailjet_api_secret = os.getenv("MAILJET_API_SECRET")
 mailjet = Client(auth=(mailjet_api_key, mailjet_api_secret), version='v3.1')
 ph = PasswordHasher()
 
+# File paths
+IDEAS_JSON_PATH = '/app/ideas.json'
+USERS_JSON_PATH = '/app/users.json'
+
+# Define the backup directory on the host (this will be mounted to the container)
+BACKUP_DIR = os.getenv('BACKUP_DIR', '/app/backup')
+
+# URLs for downloading default files (replace with actual URLs)
+DEFAULT_USERS_URL = 'https://r2.icbest.ca/users.json'
+DEFAULT_IDEAS_URL = 'https://r2.icbest.ca/ideas.json'
+
+
+def download_file(url, path):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+    
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req) as response, open(path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+        app.logger.info(f"File downloaded successfully from {url}")
+    except urllib.error.HTTPError as e:
+        app.logger.error(f"HTTP error: {e.code} - {e.reason}")
+    except Exception as e:
+        app.logger.error(f"Error downloading file: {str(e)}")
+
+def get_latest_backup_file(backup_dir, prefix):
+    """Get the latest backup file in the directory with the given prefix (e.g., 'ideas' or 'users')."""
+    files = [f for f in os.listdir(backup_dir) if f.startswith(prefix) and f.endswith('.json')]
+    if not files:
+        return None
+    latest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(backup_dir, f)))
+    return os.path.join(backup_dir, latest_file)
+
+def restore_or_download_files():
+    global app  # Use the global Flask app for logging
+
+    try:
+        # Check if the files already exist
+        files_exist = os.path.exists(IDEAS_JSON_PATH) and os.path.exists(USERS_JSON_PATH)
+
+        if files_exist:
+            app.logger.info('Files already exist, using them.')
+            return  # Exit the function as files are already present
+
+        # Files don't exist, check for backups
+        latest_ideas_backup = get_latest_backup_file(BACKUP_DIR, 'ideas')
+        latest_users_backup = get_latest_backup_file(BACKUP_DIR, 'users')
+
+        if latest_ideas_backup and latest_users_backup:
+            # Restore from the latest backup files
+            shutil.copy2(latest_ideas_backup, IDEAS_JSON_PATH)
+            shutil.copy2(latest_users_backup, USERS_JSON_PATH)
+            app.logger.info(f'Restored from latest backups: {latest_ideas_backup}, {latest_users_backup}')
+        else:
+            # If no backup is found, download default files or create empty ones
+            app.logger.info('No backups found, downloading default files...')
+            try:
+                download_file(DEFAULT_USERS_URL, USERS_JSON_PATH)
+                download_file(DEFAULT_IDEAS_URL, IDEAS_JSON_PATH)
+            except Exception as e:
+                app.logger.error(f"Failed to download default files: {str(e)}")
+                # Create empty files as a fallback if download fails
+                app.logger.info("Creating empty fallback files.")
+                with open(USERS_JSON_PATH, 'w') as users_file:
+                    json.dump([], users_file)
+                with open(IDEAS_JSON_PATH, 'w') as ideas_file:
+                    json.dump([], ideas_file)
+
+    except Exception as e:
+        app.logger.error(f"Error during file restoration or download: {str(e)}")
+
+
+
+# Call this function when the app starts
+restore_or_download_files()
+
 
 def update_gift_ideas_json(data):
-    with open('ideas.json', 'w') as file:
+    with open(IDEAS_JSON_PATH, 'w') as file:
         json.dump(data, file, indent=4)
 
 # Load user data from the JSON file
-with open('users.json', 'r') as file:
+with open(USERS_JSON_PATH, 'r') as file:
     users = json.load(file)
 
 # Load gift ideas data from the JSON file
-with open('ideas.json', 'r') as file:
+with open(IDEAS_JSON_PATH, 'r') as file:
     gift_ideas_data = json.load(file)
 
 # Define a decorator for requiring authentication
@@ -47,14 +124,8 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Define the paths to the files you want to back up
-IDEAS_JSON_PATH = '/app/ideas.json'
-USERS_JSON_PATH = '/app/users.json'
 
-# Define the backup directory on the host (this will be mounted to the container)
-BACKUP_DIR = '/backup'  # This path should match the mounted directory
-
-
+# Backup function
 def backup_files():
     try:
         # Generate timestamp for the backup files
@@ -73,10 +144,11 @@ def backup_files():
     except Exception as e:
         app.logger.error(f"Backup failed: {str(e)}")
 
-# Set up the scheduler
+# Set up the scheduler for backups
 scheduler = BackgroundScheduler()
 scheduler.add_job(backup_files, 'interval', hours=1)  # Schedule the job to run every hour
 scheduler.start()
+
 
 @app.route('/change_email', methods=['POST'])
 @login_required
